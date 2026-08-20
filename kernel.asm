@@ -1,5 +1,6 @@
 ; ============================================================
 ; KERNEL  -  32 BIT PROTECTED MODE, RING 0
+; AUTHOR - AMOL SINGH (https://amolsingh.in) | aricsvenz@gmail.com
 ; ============================================================
 ;
 ; Loaded by the bootloader at 0000:8000, still in 16 bit
