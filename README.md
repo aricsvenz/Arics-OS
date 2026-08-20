@@ -1,5 +1,5 @@
 # ARICS OS V1.0
-# Amol Singh (https://amolsingh.in)
+# Author: Amol Singh (https://amolsingh.in)
 
 A tiny operating system written from scratch — no Linux, no Windows, no libraries underneath it. It boots straight off a virtual disk, takes over the machine, and gives you a working command prompt.
 
