@@ -1,5 +1,6 @@
 /* ============================================================
  * KERNEL  -  C SIDE
+ * AUTHOR - AMOL SINGH (https://amolsingh.in) | aricsvenz@gmail.com
  * ============================================================
  *
  * The first C in the project. Called from entry.asm once the
