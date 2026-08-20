@@ -1,5 +1,6 @@
 /* ============================================================
  * SHELL  -  A RING 3 PROGRAM
+ * AUTHOR - AMOL SINGH (https://amolsingh.in) | aricsvenz@gmail.com
  * ============================================================
  *
  * Runs at privilege level 3. It cannot execute IN, OUT, CLI,
