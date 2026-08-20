@@ -1,5 +1,6 @@
 ; ============================================================
 ; BOOTLOADER  -  STAGE 1
+; AUTHOR - AMOL SINGH (https://amolsingh.in) | aricsvenz@gmail.com
 ; ============================================================
 ;
 ; BIOS loads this code at 0000:7C00.
