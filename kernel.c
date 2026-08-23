@@ -25,3 +25,5 @@ void kmain(void)
 {
     kputs("\r\nC is running in the kernel.\r\n");
 }
+
+/*will start here*/
