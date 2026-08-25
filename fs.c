@@ -94,6 +94,36 @@ static unsigned int slot_lba(int index)
 }
 
 
+/* Added by Nayan - only the exact on-disk value 1 means "used".
+ * Treating every non-zero byte as a valid file made ls display garbage
+ * when an old or partially initialized image contained stale metadata. */
+static int entry_is_valid(int index)
+{
+    const struct dirent *e = &dir.entry[index];
+
+    if (e->flags != 1)
+        return 0;
+
+    if (e->length > FILE_MAX)
+        return 0;
+
+    if ((unsigned int)e->start_lba != slot_lba(index))
+        return 0;
+
+    /* A live entry must have at least one printable filename byte. */
+    if ((unsigned char)e->name[0] < 33 || (unsigned char)e->name[0] > 126)
+        return 0;
+
+    for (int i = 0; i < NAME_MAX && e->name[i]; i++) {
+        unsigned char c = (unsigned char)e->name[i];
+        if (c < 33 || c > 126)
+            return 0;
+    }
+
+    return 1;
+}
+
+
 /* Both names must end at the same point, otherwise "a" would
    match "abc". */
 static int name_matches(const struct dirent *e, const char *name, int len)
@@ -115,7 +145,7 @@ static int name_matches(const struct dirent *e, const char *name, int len)
 static int find_file(const char *name, int len)
 {
     for (int i = 0; i < MAX_FILES; i++)
-        if (dir.entry[i].flags && name_matches(&dir.entry[i], name, len))
+        if (entry_is_valid(i) && name_matches(&dir.entry[i], name, len))
             return i;
 
     return -1;
@@ -125,7 +155,7 @@ static int find_file(const char *name, int len)
 static int find_free(void)
 {
     for (int i = 0; i < MAX_FILES; i++)
-        if (!dir.entry[i].flags)
+        if (dir.entry[i].flags != 1)
             return i;
 
     return -1;
@@ -141,19 +171,22 @@ static int find_free(void)
  * ============================================================ */
 
 /* Copies one raw directory entry out to the caller.
-   Returns 1 if the slot is used, 0 if free or invalid. */
+   Returns 1 if the slot is used, 0 if free/invalid, -1 on disk error. */
 int fs_stat(int index, void *dest)
 {
-    /* Added by Nayan - reject an obviously invalid destination pointer. */
     if (index < 0 || index >= MAX_FILES || dest == 0)
         return 0;
 
+    /* Added by Nayan - distinguish an actual ATA/directory read failure
+     * from an ordinary empty directory slot. This makes ls diagnosable. */
     if (dir_load() < 0)
+        return -1;
+
+    if (!entry_is_valid(index))
         return 0;
 
     copy(dest, &dir.entry[index], sizeof(struct dirent));
-
-    return dir.entry[index].flags;
+    return 1;
 }
 
 
@@ -168,14 +201,6 @@ int fs_read(const char *name, int len, void *dest)
     int i = find_file(name, len);
 
     if (i < 0)
-        return -1;
-
-    /* Added by Nayan - reject corrupt metadata before disk I/O or before
-     * returning a length that could make userspace overrun its buffer. */
-    if (dir.entry[i].length > FILE_MAX)
-        return -1;
-
-    if ((unsigned int)dir.entry[i].start_lba != slot_lba(i))
         return -1;
 
     if (disk_read(dir.entry[i].start_lba, FILE_SECTORS, dest) < 0)

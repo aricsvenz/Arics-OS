@@ -42,9 +42,6 @@
  * INT 80h with the call number in EAX and arguments in EBX,
  * ECX, EDX and ESI. The kernel preserves everything except
  * EAX, which comes back as the result.
- *
- * This is the one place the shell needs assembly, and only
- * because C has no syntax for "raise interrupt 0x80".
  * ============================================================ */
 
 static int sys(int n, int a, int b, int c, int d)
@@ -74,18 +71,12 @@ static void print_n(const char *s, int n)
         putch(s[i]);
 }
 
-
-/* Prints up to NAME_MAX characters, stopping at the NUL
-   padding the kernel wrote into the directory entry. */
 static void print_name(const char *s)
 {
     for (int i = 0; i < NAME_MAX && s[i]; i++)
         putch(s[i]);
 }
 
-
-/* Digits come out of the division in reverse, so they are
-   buffered and emitted backwards. */
 static void print_dec(unsigned int v)
 {
     char buf[12];
@@ -100,7 +91,6 @@ static void print_dec(unsigned int v)
         putch(buf[--n]);
 }
 
-
 static int str_eq_n(const char *a, const char *b, int n)
 {
     for (int i = 0; i < n; i++)
@@ -108,7 +98,6 @@ static int str_eq_n(const char *a, const char *b, int n)
             return 0;
     return 1;
 }
-
 
 static int str_len(const char *s)
 {
@@ -121,14 +110,6 @@ static int str_len(const char *s)
 
 /* ============================================================
  * LINE INPUT
- * ============================================================
- *
- * The kernel hands over one character at a time. Echoing and
- * editing are the program's job.
- *
- * line_len is the only bound backspace needs: an empty buffer
- * means there is nothing to erase, so the prompt is safe by
- * construction.
  * ============================================================ */
 
 static char line[LINE_MAX];
@@ -204,14 +185,10 @@ static void split_line(void)
     arg_len = end - i;
 }
 
-
-/* Both strings must end together, otherwise "he" would match
-   "help". */
 static int name_is(const char *want)
 {
     return str_len(want) == name_len && str_eq_n(name_ptr, want, name_len);
 }
-
 
 /* Added by Nayan - exact argument matching is useful for confirmations
  * without needing a NUL-terminated command-line buffer. */
@@ -219,7 +196,6 @@ static int arg_is(const char *want)
 {
     return str_len(want) == arg_len && str_eq_n(arg_ptr, want, arg_len);
 }
-
 
 /* Added by Nayan - filenames longer than the on-disk field used to be
  * silently truncated by write, making the saved name surprising. */
@@ -288,7 +264,6 @@ static void cmd_about(void)
           "INT 80h system calls, no BIOS after boot\r\n");
 }
 
-
 /* Added by Nayan - a dedicated version command makes scripts and users
  * able to query the release without parsing the full about output. */
 static void cmd_version(void)
@@ -307,12 +282,6 @@ static void cmd_reboot(void)
     sys(SYS_REBOOT, 0, 0, 0, 0);
 }
 
-
-/* Deliberately illegal.
- *
- * CLI is privileged. In ring 0 it would quietly disable
- * interrupts; here the CPU refuses and raises a General
- * Protection fault, which is exception 13. */
 static void cmd_fault(void)
 {
     print("Executing CLI from ring 3...\r\n");
@@ -320,13 +289,6 @@ static void cmd_fault(void)
     print("this line is never reached\r\n");
 }
 
-
-/* Nothing is mapped above 4 MB, so this address does not
- * exist as far as the MMU is concerned. The CPU raises a page
- * fault, exception 14, rather than reading or writing whatever
- * happens to be sitting in RAM there.
- *
- * Before paging, this wrote to real memory and returned. */
 static void cmd_poke(void)
 {
     print("Writing to unmapped memory at 0x40000000...\r\n");
@@ -337,14 +299,10 @@ static void cmd_poke(void)
 
 /* ============================================================
  * FILES
- * ============================================================
- *
- * The shell never sees a sector. It names a file and the
- * kernel does the rest.
  * ============================================================ */
 
 struct dirent {
-    unsigned char  flags;          /* 0 = free, 1 = used */
+    unsigned char  flags;
     char           name[NAME_MAX];
     unsigned short start_lba;
     unsigned short length;
@@ -359,8 +317,19 @@ static void cmd_ls(void)
 {
     int found = 0;
 
+    /* Added by Nayan - fs_stat now distinguishes empty slots (0) from an
+     * actual disk error (-1). The previous boolean check treated -1 as a
+     * valid file and could print stale directory data, making ls appear
+     * broken when ATA access failed. */
     for (int i = 0; i < MAX_FILES; i++) {
-        if (!sys(SYS_FILE_STAT, i, (int)&entry, 0, 0))
+        int status = sys(SYS_FILE_STAT, i, (int)&entry, 0, 0);
+
+        if (status < 0) {
+            print("ls: filesystem read error\r\n");
+            return;
+        }
+
+        if (status == 0)
             continue;
 
         found = 1;
@@ -370,8 +339,6 @@ static void cmd_ls(void)
         print(" bytes\r\n");
     }
 
-    /* Added by Nayan - make an empty directory distinguishable from a
-     * command that produced no visible output because of an error. */
     if (!found)
         print("(no files)\r\n");
 }
@@ -419,13 +386,6 @@ static void cmd_format(void)
         print("directory cleared\r\n");
 }
 
-
-/* The line editor is an ordinary loop in an ordinary program.
- * It calls read_line exactly like the shell does.
- *
- * The assembly version needed a mode flag for this, because
- * the only input loop belonged to the kernel and could not be
- * borrowed. A user program can simply keep reading. */
 static void cmd_write(void)
 {
     if (!filename_arg_ok()) {
@@ -433,8 +393,6 @@ static void cmd_write(void)
         return;
     }
 
-    /* Keep the name: the line buffer is about to be reused for
-       the file contents. */
     namebuf_len = arg_len;
     for (int i = 0; i < namebuf_len; i++)
         namebuf[i] = arg_ptr[i];
@@ -531,10 +489,6 @@ static void run_command(void)
 
 /* ============================================================
  * ENTRY
- * ============================================================
- *
- * Reached by the IRET at the end of enter_user_mode. There is
- * nowhere to return to, so this never exits.
  * ============================================================ */
 
 void shell_main(void)

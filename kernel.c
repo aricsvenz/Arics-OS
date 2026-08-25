@@ -21,9 +21,48 @@
 extern void kputs(const char *s);
 
 
-void kmain(void)
+/* Added by Nayan - small deterministic delay used only for the visual boot
+ * progress animation. volatile prevents the compiler from removing it. */
+static void boot_delay(unsigned int amount)
 {
-    kputs("\r\nC is running in the kernel.\r\n");
+    volatile unsigned int i;
+    for (i = 0; i < amount; i++) {
+        __asm__ __volatile__("nop");
+    }
 }
 
-/*will start here*/
+
+/* Added by Nayan - show a compact ARICS mark and a visible progress bar
+ * after the protected-mode splash and before the ring-3 shell starts. */
+static void boot_loading_screen(void)
+{
+    kputs("\r\n"
+          "                 /\\        R I C S\r\n"
+          "                /  \\       O S\r\n"
+          "               / /\\ \\\r\n"
+          "              / ____ \\\r\n"
+          "             /_/    \\_\\\r\n"
+          "\r\n"
+          "                    ARICS OS\r\n"
+          "             Secure 32-bit startup\r\n\r\n"
+          "             Loading kernel  [");
+
+    for (int i = 0; i < 24; i++) {
+        kputs("#");
+        boot_delay(1400000U);
+    }
+
+    kputs("]\r\n"
+          "             Initializing shell... done\r\n"
+          "             Starting ARICS OS...\r\n\r\n");
+
+    boot_delay(2500000U);
+}
+
+
+void kmain(void)
+{
+    /* Added by Nayan - replace the old developer-only boot message with
+     * a user-facing logo/loading sequence. */
+    boot_loading_screen();
+}
