@@ -31,6 +31,10 @@
 #define NAME_MAX       11
 #define SECTOR_SIZE   512
 
+/* Added by Nayan - keep the physical file-slot size in one place.
+ * Lengths supplied by ring 3 or loaded from disk must never exceed it. */
+#define FILE_MAX      (FILE_SECTORS * SECTOR_SIZE)
+
 
 /* cdecl wrappers around the ATA driver, in kernel.asm.
    Both return 0 on success and -1 on failure. */
@@ -79,6 +83,14 @@ static void copy(void *dst, const void *src, int n)
 static int name_ok(int len)
 {
     return len >= 1 && len <= NAME_MAX;
+}
+
+
+/* Added by Nayan - fixed-slot metadata should never be allowed to
+ * redirect a file read to arbitrary LBAs if the directory is damaged. */
+static unsigned int slot_lba(int index)
+{
+    return DATA_LBA + (unsigned int)index * FILE_SECTORS;
 }
 
 
@@ -132,7 +144,8 @@ static int find_free(void)
    Returns 1 if the slot is used, 0 if free or invalid. */
 int fs_stat(int index, void *dest)
 {
-    if (index < 0 || index >= MAX_FILES)
+    /* Added by Nayan - reject an obviously invalid destination pointer. */
+    if (index < 0 || index >= MAX_FILES || dest == 0)
         return 0;
 
     if (dir_load() < 0)
@@ -148,12 +161,21 @@ int fs_stat(int index, void *dest)
    dest must have room for FILE_SECTORS * SECTOR_SIZE bytes. */
 int fs_read(const char *name, int len, void *dest)
 {
-    if (!name_ok(len) || dir_load() < 0)
+    /* Added by Nayan - syscall pointers and lengths are untrusted input. */
+    if (name == 0 || dest == 0 || !name_ok(len) || dir_load() < 0)
         return -1;
 
     int i = find_file(name, len);
 
     if (i < 0)
+        return -1;
+
+    /* Added by Nayan - reject corrupt metadata before disk I/O or before
+     * returning a length that could make userspace overrun its buffer. */
+    if (dir.entry[i].length > FILE_MAX)
+        return -1;
+
+    if ((unsigned int)dir.entry[i].start_lba != slot_lba(i))
         return -1;
 
     if (disk_read(dir.entry[i].start_lba, FILE_SECTORS, dest) < 0)
@@ -167,7 +189,15 @@ int fs_read(const char *name, int len, void *dest)
    exists. Returns 0 or -1. */
 int fs_write(const char *name, int len, const void *data, int datalen)
 {
-    if (!name_ok(len) || dir_load() < 0)
+    /* Added by Nayan - ring 3 controls every argument to this syscall.
+     * Never store a length larger than the physical 2 KB file slot. */
+    if (name == 0 || data == 0 || !name_ok(len))
+        return -1;
+
+    if (datalen < 0 || datalen > FILE_MAX)
+        return -1;
+
+    if (dir_load() < 0)
         return -1;
 
     int i = find_file(name, len);
@@ -184,7 +214,7 @@ int fs_write(const char *name, int len, const void *data, int datalen)
         e->name[k] = (k < len) ? name[k] : 0;
 
     /* Fixed slot: this entry always owns the same sectors. */
-    e->start_lba = (unsigned short)(DATA_LBA + i * FILE_SECTORS);
+    e->start_lba = (unsigned short)slot_lba(i);
 
     /* Data first, then the directory entry that points at it. */
     if (disk_write(e->start_lba, FILE_SECTORS, data) < 0)
@@ -199,7 +229,7 @@ int fs_write(const char *name, int len, const void *data, int datalen)
 
 int fs_delete(const char *name, int len)
 {
-    if (!name_ok(len) || dir_load() < 0)
+    if (name == 0 || !name_ok(len) || dir_load() < 0)
         return -1;
 
     int i = find_file(name, len);
@@ -207,7 +237,11 @@ int fs_delete(const char *name, int len)
     if (i < 0)
         return -1;
 
-    dir.entry[i].flags = 0;
+    /* Added by Nayan - clear the complete entry rather than leaving stale
+     * filename, sector and length metadata behind in a free slot. */
+    unsigned char *p = (unsigned char *)&dir.entry[i];
+    for (int k = 0; k < (int)sizeof(struct dirent); k++)
+        p[k] = 0;
 
     return dir_save();
 }

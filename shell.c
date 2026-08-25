@@ -155,6 +155,11 @@ static void read_line(void)
             continue;
         }
 
+        /* Added by Nayan - ignore control bytes that are not useful to the
+         * line editor instead of silently storing them in command input. */
+        if (c < 32 || c > 126)
+            continue;
+
         if (line_len < LINE_MAX) {
             line[line_len++] = (char)c;
             putch((char)c);
@@ -167,26 +172,36 @@ static void read_line(void)
  * COMMAND PARSING
  * ============================================================ */
 
+static const char *name_ptr;
 static int         name_len;
 static const char *arg_ptr;
 static int         arg_len;
 
 static void split_line(void)
 {
-    int i = 0;
+    /* Added by Nayan - accept leading spaces, repeated separators and
+     * trailing spaces without changing the user's actual line buffer. */
+    int start = 0;
+    int end = line_len;
 
-    while (i < line_len && line[i] != ' ')
+    while (start < end && line[start] == ' ')
+        start++;
+
+    while (end > start && line[end - 1] == ' ')
+        end--;
+
+    int i = start;
+    while (i < end && line[i] != ' ')
         i++;
 
-    name_len = i;
+    name_ptr = &line[start];
+    name_len = i - start;
 
-    if (i < line_len) {
-        arg_ptr = &line[i + 1];
-        arg_len = line_len - i - 1;
-    } else {
-        arg_ptr = line;
-        arg_len = 0;
-    }
+    while (i < end && line[i] == ' ')
+        i++;
+
+    arg_ptr = &line[i];
+    arg_len = end - i;
 }
 
 
@@ -194,7 +209,33 @@ static void split_line(void)
    "help". */
 static int name_is(const char *want)
 {
-    return str_len(want) == name_len && str_eq_n(line, want, name_len);
+    return str_len(want) == name_len && str_eq_n(name_ptr, want, name_len);
+}
+
+
+/* Added by Nayan - exact argument matching is useful for confirmations
+ * without needing a NUL-terminated command-line buffer. */
+static int arg_is(const char *want)
+{
+    return str_len(want) == arg_len && str_eq_n(arg_ptr, want, arg_len);
+}
+
+
+/* Added by Nayan - filenames longer than the on-disk field used to be
+ * silently truncated by write, making the saved name surprising. */
+static int filename_arg_ok(void)
+{
+    if (arg_len == 0) {
+        print("missing filename\r\n");
+        return 0;
+    }
+
+    if (arg_len > NAME_MAX) {
+        print("filename too long (max 11 characters)\r\n");
+        return 0;
+    }
+
+    return 1;
 }
 
 
@@ -216,15 +257,16 @@ static void cmd_help(void)
           "clear   - clear the screen\r\n"
           "echo    - print the rest of the line\r\n"
           "about   - system information\r\n"
+          "version - show OS version\r\n"
           "sysinfo - hardware information\r\n"
           "fault   - try a privileged instruction and get caught\r\n"
           "poke    - touch unmapped memory and get a page fault\r\n"
           "reboot  - restart the machine\r\n"
           "ls      - list files\r\n"
-          "read    - show a file\r\n"
+          "read    - show a file (cat is an alias)\r\n"
           "write   - create or overwrite a file\r\n"
           "rm      - delete a file\r\n"
-          "format  - clear the directory\r\n");
+          "format YES - clear the directory\r\n");
 }
 
 static void cmd_clear(void)
@@ -244,6 +286,14 @@ static void cmd_about(void)
     print("ARICS OS V3.0\r\n"
           "Ring 0 kernel in assembly, ring 3 shell in C\r\n"
           "INT 80h system calls, no BIOS after boot\r\n");
+}
+
+
+/* Added by Nayan - a dedicated version command makes scripts and users
+ * able to query the release without parsing the full about output. */
+static void cmd_version(void)
+{
+    print("ARICS OS V3.0\r\n");
 }
 
 static void cmd_sysinfo(void)
@@ -307,20 +357,28 @@ static int           namebuf_len;
 
 static void cmd_ls(void)
 {
+    int found = 0;
+
     for (int i = 0; i < MAX_FILES; i++) {
         if (!sys(SYS_FILE_STAT, i, (int)&entry, 0, 0))
             continue;
 
+        found = 1;
         print_name(entry.name);
         print("  ");
         print_dec(entry.length);
         print(" bytes\r\n");
     }
+
+    /* Added by Nayan - make an empty directory distinguishable from a
+     * command that produced no visible output because of an error. */
+    if (!found)
+        print("(no files)\r\n");
 }
 
 static void cmd_read(void)
 {
-    if (arg_len == 0) {
+    if (!filename_arg_ok()) {
         print("usage: read <name>\r\n");
         return;
     }
@@ -328,26 +386,33 @@ static void cmd_read(void)
     int n = sys(SYS_FILE_READ, (int)arg_ptr, arg_len, (int)filebuf, 0);
 
     if (n < 0)
-        print("no such file\r\n");
+        print("file not found or filesystem error\r\n");
     else
         print_n(filebuf, n);
 }
 
 static void cmd_rm(void)
 {
-    if (arg_len == 0) {
+    if (!filename_arg_ok()) {
         print("usage: rm <name>\r\n");
         return;
     }
 
     if (sys(SYS_FILE_DELETE, (int)arg_ptr, arg_len, 0, 0) < 0)
-        print("no such file\r\n");
+        print("file not found or filesystem error\r\n");
     else
         print("removed\r\n");
 }
 
 static void cmd_format(void)
 {
+    /* Added by Nayan - formatting is destructive, so require an explicit
+     * confirmation token instead of wiping the directory on a typo. */
+    if (!arg_is("YES")) {
+        print("usage: format YES\r\n");
+        return;
+    }
+
     if (sys(SYS_FORMAT, 0, 0, 0, 0) < 0)
         print("disk error\r\n");
     else
@@ -363,14 +428,14 @@ static void cmd_format(void)
  * borrowed. A user program can simply keep reading. */
 static void cmd_write(void)
 {
-    if (arg_len == 0) {
+    if (!filename_arg_ok()) {
         print("usage: write <name>\r\n");
         return;
     }
 
     /* Keep the name: the line buffer is about to be reused for
        the file contents. */
-    namebuf_len = arg_len > NAME_MAX ? NAME_MAX : arg_len;
+    namebuf_len = arg_len;
     for (int i = 0; i < namebuf_len; i++)
         namebuf[i] = arg_ptr[i];
 
@@ -426,6 +491,7 @@ static const struct command commands[] = {
     { "clear",   cmd_clear   },
     { "echo",    cmd_echo    },
     { "about",   cmd_about   },
+    { "version", cmd_version },
     { "sysinfo", cmd_sysinfo },
     { "system",  cmd_sysinfo },
     { "fault",   cmd_fault   },
@@ -433,10 +499,11 @@ static const struct command commands[] = {
     { "reboot",  cmd_reboot  },
     { "ls",      cmd_ls      },
     { "read",    cmd_read    },
+    { "cat",     cmd_read    },
     { "write",   cmd_write   },
     { "rm",      cmd_rm      },
     { "format",  cmd_format  },
-    { 0,         0           }
+    { 0,           0           }
 };
 
 static void run_command(void)
@@ -446,6 +513,9 @@ static void run_command(void)
 
     split_line();
 
+    if (name_len == 0)
+        return;
+
     for (int i = 0; commands[i].name; i++) {
         if (name_is(commands[i].name)) {
             commands[i].fn();
@@ -454,7 +524,7 @@ static void run_command(void)
     }
 
     print("Unknown command: ");
-    print_n(line, name_len);
+    print_n(name_ptr, name_len);
     print("\r\n");
 }
 
