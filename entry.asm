@@ -412,3 +412,6 @@ enter_user_mode:
     push dword shell_main       ; EIP
 
     iretd
+
+
+;still not underatanding what shit is happening
